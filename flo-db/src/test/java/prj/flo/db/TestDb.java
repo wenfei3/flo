@@ -2,20 +2,20 @@ package prj.flo.db;
 
 import java.util.List;
 
+import prj.flo.db.Db.Update;
+
 public class TestDb {
   
+  @Db.OrmClass(table = "user")
   public  static class User {
     public  long   userId;
     public  long   ctime;
     public  String nickname;
     public  int    gender;
     public  int    birthday;
+    @Db.OrmIgnore
     public  String birthdayStr;
     public  String json;
-    
-    public  int    getBirthday() {
-      return birthday;
-    }
     
     public  void   setBirthday(int birthday) {
       this.birthday = birthday;
@@ -51,17 +51,28 @@ public class TestDb {
         primary key (`user_id`),
         index i_user_nickname (`nickname`)
       ) engine=InnoDB default charset=utf8;
-      insert into user(ctime,nickname,gender,birthday,json) values
-        (101, 'name1', 1, 20000101, '{}'),
-        (103, 'name2', 2, 20000102, '{"x":123}'),
-        (112, 'name3', 1, 20000103, '{}');
      */
     
     Db db = Db.getInstance("test1");
-    Db.Query<User> q = new Db.Query<User>();
-    q.sql = "select * from user limit 2";
-    q.ormClass = User.class;
-    List<User> users = db.query(q);
+    
+    //add some users if no data
+    Long count = db.querySingle(new Db.Query<Long>()
+        .sql("select count(*) from user"));
+    if (count < 5) {
+      for (int i = 0; i < 5; i++) {
+        User user = new User();
+        user.ctime    = System.currentTimeMillis();
+        user.nickname = "name" + i;
+        user.gender   = 1;
+        user.birthday = 20000104;
+        user.json     = "{}";
+        db.update(Update.add(user));
+      }
+    }
+    
+    //query users
+    List<User> users = db.query(new Db.Query<User>(User.class)
+        .sql("select * from user limit 5"));
     for (User u : users) {
       System.out.println(u);
     }
