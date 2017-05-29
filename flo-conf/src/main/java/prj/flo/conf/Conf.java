@@ -40,6 +40,7 @@ public class Conf {
 
   /** Key value */
   public  static class Kv {
+    
     public  String key;
     public  String value;
     
@@ -71,24 +72,24 @@ public class Conf {
     void changed(List<Event> events);
   }
 
-  public  static String   getEnv() {
+  public  static String   env() {
     return Env;
   }
 
-  public  static Integer  getInt(String key) {
-    return getInt(key, null);
-  }
-
-  public  static Integer  getInt(String key, Integer defaultValue) {
-    return str2int(get(key), defaultValue);
+  public  static String   get(String key, String defaultValue) {
+    return single(key, true, true, ConfFile, ConfClasspathFile, defaultValue);
   }
 
   public  static String   get(String key) {
     return get(key, null);
   }
 
-  public  static String   get(String key, String defaultValue) {
-    return single(key, true, true, ConfFile, ConfClasspathFile, defaultValue);
+  public  static Integer  getInt(String key, Integer defaultValue) {
+    return str2int(get(key), defaultValue);
+  }
+
+  public  static Integer  getInt(String key) {
+    return getInt(key, null);
   }
   
   public  static String   keyEnd(String key) {
@@ -144,7 +145,6 @@ public class Conf {
     }
     
     return defaultValue;
-
   }
   
   private static String   singleInClasspathFile(String path, String key) {
@@ -202,7 +202,6 @@ public class Conf {
       kvs2.add(new Kv(e.getKey(), e.getValue()));
     }
     return kvs2;
-
   }
   
   private static Map<String,String> rangeInSysProperty(
@@ -225,17 +224,19 @@ public class Conf {
     return rangeInMap(cacheOfFile(path), key, keyEnd, to);
   }
   
+  @SuppressWarnings("unchecked")
   private static Map<String,String> rangeInMap(
       Properties p, String key, String keyEnd, Map<String, String> to) {
-    @SuppressWarnings("unchecked")
-    TreeMap<String,String> m = new TreeMap<String,String>(
-        (Map<String,String>)((Map<?,?>)p));
-    return rangeInMap(m, key, keyEnd, to);
+    return rangeInMap(
+        new TreeMap<String,String>((Map<String,String>)((Map<?,?>)p)),
+        key, keyEnd, to);
   }
   
   private static Map<String,String> rangeInMap(
       Map<String,String> m, String key, String keyEnd, Map<String, String> to) {
-    return rangeInMap(new TreeMap<String,String>(m), key, keyEnd, to);
+    return rangeInMap(
+        new TreeMap<String,String>(m),
+        key, keyEnd, to);
   }
   
   private static Map<String,String> rangeInMap(
