@@ -4,6 +4,7 @@ import java.io.FileInputStream;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -91,12 +92,18 @@ public class Conf {
   public  static Integer  getInt(String key) {
     return getInt(key, null);
   }
+
+  public  static String   keyStart(String prefix) {
+    if (prefix == null) {return null;}
+    if (prefix.isEmpty()) {return "";}
+    return prefix + (char)1;
+  }
   
-  public  static String   keyEnd(String key) {
-    if (key == null) {return null;}
-    if (key.isEmpty()) {return "";}
-    int len = key.length();
-    return key.substring(0, len - 1) + (char)(key.charAt(len - 1) + 1);
+  public  static String   keyEnd(String prefix) {
+    if (prefix == null) {return null;}
+    if (prefix.isEmpty()) {return "";}
+    int len = prefix.length();
+    return prefix.substring(0, len - 1) + (char)(prefix.charAt(len - 1) + 1);
   }
   
   public  static List<Kv> range(String key, String keyEnd) {
@@ -157,44 +164,44 @@ public class Conf {
 
 
   private static List<Kv> range(
-    String key, String keyEnd,
+    String keyStart, String keyEnd,
     boolean getInSystemProperty, boolean getInSystemEnv,
     String getInFile, String getInClasspathFile) {
 
     //priority:
     //systemProperty > systemEnv > file > classpath-file > defaultValue
     
-    if (key == null) {return null;}
+    if (keyStart == null) {return null;}
     
     //single key
     if (keyEnd == null) {
-      String v = single(key, getInSystemProperty, getInSystemEnv,
+      String v = single(keyStart, getInSystemProperty, getInSystemEnv,
           getInFile, getInClasspathFile, null);
-      return v == null
-          ? Arrays.asList(new Kv[]{})
-          : Arrays.asList(new Kv[]{new Kv(key, v)});
+      if (v == null) {return Collections.emptyList();}
+      return Arrays.asList(new Kv[]{new Kv(keyStart, v)});
     }
     
     //range keys
     TreeMap<String, String> kvs = new TreeMap<String, String>();
     
     if (getInSystemProperty) {
-      rangeInSysProperty(key, keyEnd, kvs);
+      rangeInSysProperty(keyStart, keyEnd, kvs);
     }
 
     if (getInSystemEnv) {
-      rangeInSysEnv(key, keyEnd, kvs);
+      rangeInSysEnv(keyStart, keyEnd, kvs);
     }
 
     if (getInFile != null) {
-      rangeInFile(getInFile, key, keyEnd, kvs);
+      rangeInFile(getInFile, keyStart, keyEnd, kvs);
     }
 
     if (getInClasspathFile != null) {
       if (Env != null) {
-        rangeInClasspathFile(getInClasspathFile + "." + Env, key, keyEnd, kvs);
+        rangeInClasspathFile(
+            getInClasspathFile + "." + Env, keyStart, keyEnd, kvs);
       }
-      rangeInClasspathFile(getInClasspathFile, key, keyEnd, kvs);
+      rangeInClasspathFile(getInClasspathFile, keyStart, keyEnd, kvs);
     }
     
     ArrayList<Kv> kvs2 = new ArrayList<Kv>(kvs.size());
@@ -205,42 +212,43 @@ public class Conf {
   }
   
   private static Map<String,String> rangeInSysProperty(
-      String key, String keyEnd, Map<String, String> to) {
-    return rangeInMap(System.getProperties(), key, keyEnd, to);
+      String keyStart, String keyEnd, Map<String, String> to) {
+    return rangeInMap(System.getProperties(), keyStart, keyEnd, to);
   }
   
   private static Map<String,String> rangeInSysEnv(
-      String key, String keyEnd, Map<String, String> to) {
-    return rangeInMap(System.getenv(), key, keyEnd, to);
+      String keyStart, String keyEnd, Map<String, String> to) {
+    return rangeInMap(System.getenv(), keyStart, keyEnd, to);
   }
   
   private static Map<String,String> rangeInClasspathFile(
-      String path, String key, String keyEnd, Map<String, String> to) {
-    return rangeInMap(cacheOfClasspathFile(path), key, keyEnd, to);
+      String path, String keyStart, String keyEnd, Map<String, String> to) {
+    return rangeInMap(cacheOfClasspathFile(path), keyStart, keyEnd, to);
   }
   
   private static Map<String,String> rangeInFile(
-      String path, String key, String keyEnd, Map<String, String> to) {
-    return rangeInMap(cacheOfFile(path), key, keyEnd, to);
+      String path, String keyStart, String keyEnd, Map<String, String> to) {
+    return rangeInMap(cacheOfFile(path), keyStart, keyEnd, to);
   }
   
   @SuppressWarnings("unchecked")
   private static Map<String,String> rangeInMap(
-      Properties p, String key, String keyEnd, Map<String, String> to) {
+      Properties p, String keyStart, String keyEnd, Map<String, String> to) {
     return rangeInMap(
         new TreeMap<String,String>((Map<String,String>)((Map<?,?>)p)),
-        key, keyEnd, to);
+        keyStart, keyEnd, to);
   }
   
   private static Map<String,String> rangeInMap(
-      Map<String,String> m, String key, String keyEnd, Map<String, String> to) {
+      Map<String,String> m, String keyStart, String keyEnd,
+      Map<String, String> to) {
     return rangeInMap(
         new TreeMap<String,String>(m),
-        key, keyEnd, to);
+        keyStart, keyEnd, to);
   }
   
   private static Map<String,String> rangeInMap(
-      SortedMap<String, String> m, String key, String keyEnd,
+      SortedMap<String, String> m, String keyStart, String keyEnd,
       Map<String, String> to){
 
     if (to == null) {
@@ -250,9 +258,9 @@ public class Conf {
     
     //single {key}
     if (keyEnd == null) {
-      String v = m.get(key);
+      String v = m.get(keyStart);
       if (v != null) {
-        to.putIfAbsent(key, v);
+        to.putIfAbsent(keyStart, v);
       }
       return to;
     }
@@ -261,12 +269,12 @@ public class Conf {
     //range
     //key    == "" means start from the first
     //keyEnd == "" means end at the last
-    boolean start = key.length() == 0;
+    boolean start = keyStart.length() == 0;
     boolean endAtLast = keyEnd.length() == 0;
     
     for (Entry<String,String> e : m.entrySet()) {
       if (!start) {
-        start = e.getKey().compareTo(key) >= 0;
+        start = e.getKey().compareTo(keyStart) >= 0;
         if (!start) {continue;}
       }
 
@@ -279,8 +287,6 @@ public class Conf {
     
     return to;
   }
-
-
 
 
   private static SortedMap<String,String> cacheOfClasspathFile(String path) {
@@ -316,6 +322,7 @@ public class Conf {
     SortedMap<String,String> m1 = cacheOfFile.putIfAbsent(path, m2);
     return m1 == null ? m2 : m1;
   }
+
 
   private static Integer str2int(String str, Integer defaultValue) {
     if (str == null) {return defaultValue;}

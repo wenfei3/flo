@@ -17,7 +17,7 @@ public class TestConf {
     o(Conf.get("c2"));
 
     o(Conf.range("b", "c"));
-    o(Conf.range("b/", "b" + (char)('/' + 1)));
+    o(Conf.range(Conf.keyStart("b/"), Conf.keyEnd("b/")));
     o(Conf.range("", "B"));
     o(Conf.range("u", ""));
   }

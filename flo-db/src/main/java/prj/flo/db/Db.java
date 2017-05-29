@@ -89,7 +89,7 @@ public class Db {
 
 
 
-  //Part 2: database.
+  //Part 2: database server pool.
   //one Db instance for one pool of db servers.
   //each db server has a pool of connections.
   
@@ -248,8 +248,10 @@ public class Db {
 
       Conf.Kv kv = events.get(0).kv;
       if (kv == null || kv.value == null) {return;}
+      Server server = Server.valueOf(kv.value);
+      if (server == null) {return;}
       
-      confUpdate(Server.valueOf(kv.value));
+      confUpdate(server);
     }
 
   }
@@ -296,15 +298,15 @@ public class Db {
   private Db(String name) {
     String confKeyConf = "db/" + name + "/conf";
     String confKeyServersPrefix = "db/" + name + "/servers/";
+    String confKeyServersStart  = Conf.keyStart(confKeyServersPrefix);
     String confKeyServersEnd    = Conf.keyEnd(confKeyServersPrefix);
     
     Conf.watch(confKeyConf, null, new ConfWatcher());
     confUpdate(Server.valueOf(Conf.get(confKeyConf)));
     
-    Conf.watch(confKeyServersPrefix, confKeyServersEnd, new ServersWatcher());
-    List<Conf.Kv> kvs = Conf.range(
-        confKeyServersPrefix, confKeyServersEnd);
-    List<Server> ss = new ArrayList<Server>(kvs.size());
+    Conf.watch(confKeyServersStart, confKeyServersEnd, new ServersWatcher());
+    List<Conf.Kv> kvs = Conf.range(confKeyServersStart, confKeyServersEnd);
+    List<Server>  ss  = new ArrayList<Server>(kvs.size());
     for (Conf.Kv kv : kvs) {
       Server s = Server.valueOf(kv.value);
       if (s == null) {continue;}
@@ -316,10 +318,11 @@ public class Db {
   
   
   private synchronized void confUpdate(Server conf) {
-    this.conf = v(conf, new Server());
+    this.conf = conf = v(conf, new Server());
     
-    if (serverUsing == null) {return;}
-    serverUsing.resetPool(conf);
+    if (serverUsing != null) {
+      serverUsing.resetPool(conf);
+    }
   }
   
   private synchronized void serversUpdate(List<Server> ss) {
@@ -472,7 +475,7 @@ public class Db {
     
     private static Ctm ctm(Class<?> c, String t, Map<String, String> fcs1) {
       
-      //calculate ctm
+      //calculate class table mapping
       //use getter/setter if exists, else use field
       
       Ctm ctm = new Ctm(c, t);
@@ -517,11 +520,11 @@ public class Db {
         Ctm ctm, F f, String fname, Map<String, String> fcs1) {
 
       if ((f.getModifiers() & Modifier.STATIC) > 0) {return null;}
-      if (f.getAnnotation(OrmIgnore.class) != null) {return null;}
 
+      boolean  aOrmIgnore = f.getAnnotation(OrmIgnore.class) != null;
       OrmField aOrmField = f.getAnnotation(OrmField.class);
-      String cname = cname(fname, aOrmField, fcs1);
-      if (cname == null) {return null;}
+      String cname = cname(fname, aOrmIgnore, aOrmField, fcs1);
+      if (cname == null) {return null;} //null for ignore
       
       Fcm fcm = ctm.fcmsByFname.get(fname);
       if (fcm == null) {
@@ -552,7 +555,8 @@ public class Db {
     }
     
     private static String cname(
-        String fname, OrmField aOrmField, Map<String, String> fcs1) {
+        String fname, boolean aOrmIgnore, OrmField aOrmField,
+        Map<String, String> fcs1) {
       
       //value: null for ignore; "" for default translate;
 
@@ -560,14 +564,17 @@ public class Db {
       if (fcs1 != null && fcs1.containsKey(fname)) {
         cname = fcs1.get(fname);
       }
-      if (cname == null) {return null;}
-      if (!cname.isEmpty()) {return cname;}
+      if (cname == null || !cname.isEmpty()) {
+        return cname;
+      }
 
+      if (aOrmIgnore) {return null;}
       if (aOrmField != null) {
         cname = aOrmField.column();
       }
-      if (cname == null) {return null;}
-      if (!cname.isEmpty()) {return cname;}
+      if (cname == null || !cname.isEmpty()) {
+        return cname;
+      }
       
       return cname(fname);
     }
@@ -851,11 +858,11 @@ public class Db {
 
   /**
    * <pre>
-   * 使用方法：
-   *   1 指定sql
-   *   2 指定params(如果有的话）
-   *   3 若要使用ORM，指定ormClass（不指定会使用Map或简单类型如String），
-   *     若不使用ORM，就重写result方法解析ResultSet。
+   * How to use:
+   *   1 set sql
+   *   2 set params if has
+   *   3 set ormClass if need ORM, or Map will be used;
+   *     or rewrite method result to handle ResultSet by your own
    * </pre>
    */
   public  static          class Query<O>  extends DbOp {
