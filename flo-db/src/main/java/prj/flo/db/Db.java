@@ -24,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -157,7 +158,6 @@ public class Db {
     public  Integer idleMax;
     
     public  int     modType;
-    public  boolean valid = false;
     
     public  ComboPooledDataSource pool;
     
@@ -216,12 +216,6 @@ public class Db {
       }
     }
     
-    public  void close() {
-      if (pool != null) {
-        pool.close();
-      }
-    }
-    
     public  String toString() {
       return "{driver:" + driver
           + ", host:" + host
@@ -235,7 +229,6 @@ public class Db {
           + ", poolIncre:" + poolIncre
           + ", idleMax:" + idleMax
           + ", modType:" + modType
-          + ", valid:" + valid
           + "}";
     }
     
@@ -291,9 +284,9 @@ public class Db {
 
   private static final Logger logger = LoggerFactory.getLogger(Db.class);
 
-  private Server       conf;
-  private List<Server> servers = Collections.emptyList();
-  private Server       serverUsing;
+  private Server        conf;
+  private List<Server>  servers = Collections.emptyList();
+  private AtomicInteger serverIndex = new AtomicInteger();
 
   private Db(String name) {
     String confKeyConf = "db/" + name + "/conf";
@@ -320,8 +313,8 @@ public class Db {
   private synchronized void confUpdate(Server conf) {
     this.conf = conf = v(conf, new Server());
     
-    if (serverUsing != null) {
-      serverUsing.resetPool(conf);
+    for (Server s : servers) {
+      s.resetPool(conf);
     }
   }
   
@@ -330,35 +323,35 @@ public class Db {
     
     //put {ss} to {this.dbServers}
     //add none-exist ones, update exist ones, remove delete ones
-    List<Server> ss2 = new ArrayList<Server>(this.servers);
+    List<Server> ss2   = new ArrayList<Server>(this.servers);
     for (Server s : ss) {
       for (int i = ss2.size() - 1; i >= 0; i--) {
         if (s.sameUrl(ss2.get(i))) {
-          ss2.remove(i).valid = false;
+          ss2.remove(i);
           break;
         }
       }
       if (s.modType != Server.ModTypeDelete) {
-        s.valid = true;
         ss2.add(s);
       }
     }
-    this.servers = ss2;
     
-    //dbServerUsingUpdate
-    Server su1 = serverUsing;
-    if (su1 == null || !su1.valid) {
-      Server su2 = null;
-      if (!ss2.isEmpty()) {
-        su2 = ss2.get(0);
+    //init connection
+    for (Server s : ss2) {
+      if (s.pool == null) {
+        s.resetPool(conf);
       }
-      if (su2 != null) {
-        su2.resetPool(conf);
-        this.serverUsing = su2;
-      }
-      
-      if (su1 != null) {su1.close();}
     }
+    
+    //change servers
+    this.servers = ss2;
+  }
+  
+  private Server server() {
+    List<Server> servers1 = servers;
+    if (servers1.isEmpty()  ) {return null;}
+    if (servers1.size() == 1) {return servers1.get(0);}
+    return servers1.get(serverIndex.getAndIncrement() % servers1.size());
   }
 
 
@@ -670,46 +663,105 @@ public class Db {
     }
   }
 
-  private static abstract class DbOp {
+  public  static abstract class Op {
     public  boolean    useMaster = true;
     public  Connection conn;
+    
+    public abstract Object op(Connection conn) throws SQLException;
   }
 
-  public  static          class Update extends DbOp {
-    public  String    sql;
-    public  Object[]  params;
-    public  boolean   returnGeneratedKeys = false;
-    public  Object    generatedKeys;
+  public  static          class Update extends Op {
+    private String    sql;
+    private Object[]  params;
+    private boolean   returnGeneratedKeys = false;
+    private Object    generatedKeys;
     private Object    ormObj;
     private List<Fcm> fcmAutoIncres;
+
+    public  String   sql() {
+      return sql;
+    }
     
-    public  Update sql(String sql) {
+    public  Update   sql(String sql) {
       this.sql = sql;
       return this;
     }
-    public  Update params(Object... params) {
+
+    public  Object[] params() {
+      return params;
+    }
+    
+    public  Update   params(Object... params) {
       this.params = params;
       return this;
     }
-    public  Update returnGeneratedKeys(boolean returnGeneratedKeys) {
+    
+    public  boolean  returnGeneratedKeys() {
+      return returnGeneratedKeys;
+    }
+    
+    public  Update   returnGeneratedKeys(boolean returnGeneratedKeys) {
       this.returnGeneratedKeys = returnGeneratedKeys;
       return this;
     }
-    private Update ormObj(Object ormObj) {
+    
+    public  Object   generatedKeys() {
+      return generatedKeys;
+    }
+    
+    
+    private Update   ormObj(Object ormObj) {
       this.ormObj = ormObj;
       return this;
     }
-    private Update fcmAutoIncres(List<Fcm> fcmAutoIncres) {
+    
+    private Update   fcmAutoIncres(List<Fcm> fcmAutoIncres) {
       this.fcmAutoIncres = fcmAutoIncres;
       return this;
     }
     
-    
-    public  Object generatedKeys() {
-      return generatedKeys;
+    public  Object   op(Connection db) {
+      logger.debug("Db.update.sql,{},{}", sql, params);
+      PreparedStatement stm = null;
+
+      try {
+        if (returnGeneratedKeys) {
+          stm = db.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS);
+        } else {
+          stm = db.prepareStatement(sql);
+        }
+        
+        if (params != null) {
+          for (int i = 0; i < params.length; i++) {
+            stm.setObject(i + 1, params[i]);
+          }
+        }
+
+        int r = stm.executeUpdate();
+        if (returnGeneratedKeys) {
+          ResultSet rs = stm.getGeneratedKeys();
+          if (rs.next()) {
+            generatedKeys = generatedKeys(rs);
+          }
+        }
+
+        if (returnGeneratedKeys) {
+          logger.debug("Db.update.return,{},{}", r, generatedKeys);
+        } else {
+          logger.debug("Db.update.return,{}", r);
+        }
+        return r;
+
+      } catch (SQLException e) {
+        logger.error("Db.update.fail,{},{}", sql, params);
+        throw new SqlException(e);
+
+      } finally {
+        close(stm);
+      }
     }
 
-    public  Object generatedKeys(ResultSet rs)
+    private Object   generatedKeys(ResultSet rs)
     throws SQLException {
       ResultSetMetaData meta = rs.getMetaData();
       int ccount = meta.getColumnCount();
@@ -865,13 +917,13 @@ public class Db {
    *     or rewrite method result to handle ResultSet by your own
    * </pre>
    */
-  public  static          class Query<O>  extends DbOp {
-    public  String    sql;
-    public  Object[]  params;
+  public  static          class Query<O>  extends Op {
+    private String    sql;
+    private Object[]  params;
     /** (optional) performance is better */
-    public  int       possibleCount = 0;
+    private int       possibleCount = 0;
     /** type must be specified because java's Type Erasure */
-    public  Class<O>  ormClass;
+    private Class<O>  ormClass;
 
     //for result
     private int       ccount = 0;
@@ -879,29 +931,85 @@ public class Db {
     private Ctm       ctm;
     private Fcm[]     fcms;
 
+    
     public  Query() {}
+    
     public  Query(Class<O> ormClass) {
       this.ormClass = ormClass;
+    }
+
+    public  String   sql() {
+      return sql;
     }
     
     public  Query<O> sql(String sql) {
       this.sql = sql;
       return this;
     }
+
+    public  Object[] params() {
+      return params;
+    }
+    
     public  Query<O> params(Object... params) {
       this.params = params;
       return this;
     }
+
+    public  int      possibleCount() {
+      return possibleCount;
+    }
+    
     public  Query<O> possibleCount(int possibleCount) {
       this.possibleCount = possibleCount;
       return this;
     }
+
+    public  Class<O> ormClass() {
+      return ormClass;
+    }
+    
     public  Query<O> ormClass(Class<O> ormClass) {
       this.ormClass = ormClass;
       return this;
     }
     
 
+    public  Object   op(Connection db) {
+
+      logger.debug("Db.query.sql,{},{}", sql, params);
+      PreparedStatement stm = null;
+
+      try {
+        stm = db.prepareStatement(sql);
+        
+        if (params != null) {
+          for (int i = 0; i < params.length; i++) {
+            stm.setObject(i + 1, params[i]);
+          }
+        }
+        
+        ResultSet rs = stm.executeQuery();
+
+        List<O> r = possibleCount > 0
+            ? new ArrayList<O>(possibleCount)
+            : new ArrayList<O>();
+        while (rs.next()) {
+          r.add(result(rs));
+        }
+
+        logger.debug("Db.query.return,{}", r);
+        return r;
+
+      } catch (SQLException e) {
+        logger.error("Db.query.fail,{},{}", sql, params);
+        throw new SqlException(e);
+
+      } finally {
+        close(stm);
+      }
+    }
+    
     @SuppressWarnings("unchecked")
     public  O        result(ResultSet rs) throws SQLException {
       if (ccount == 0) {
@@ -956,14 +1064,46 @@ public class Db {
     }
   }
   
-  public  static          class Batch     extends DbOp {
+  public  static          class Batch     extends Op {
     public  String         sql;
     public  List<Object[]> params2;
     public  List<String>   sqls;
-  }
+    
+    public  Object op(Connection db) {
+      logger.debug("Db.batch");
+      Statement         stm = null;
 
-  public  static abstract class Op        extends DbOp {
-    public abstract Object op(Connection conn) throws SQLException;
+      try {
+        if (sql != null) {
+          PreparedStatement stm2 = db.prepareStatement(sql);
+          stm = stm2;
+          for (Object[] p : params2) {
+            if (p != null) {
+              for (int i = 0; i < p.length; i++) {
+                stm2.setObject(i + 1, p[i]);
+              }
+            }
+            stm2.addBatch();
+          }
+        } else {
+          stm = db.createStatement();
+          for (String sql : sqls) {
+            stm.addBatch(sql);
+          }
+        }
+
+        int[] r = stm.executeBatch();
+        
+        //logger.debug("Db.batch.return,{}", r);
+        return r;
+
+      } catch (SQLException e) {
+        throw new SqlException(e);
+
+      } finally {
+        close(stm);
+      }
+    }
   }
 
 
@@ -989,87 +1129,12 @@ public class Db {
   }
   
   public  int         update(Update op) throws SqlException {
-
-    logger.debug("Db.update.sql,{},{}", op.sql, op.params);
-    Connection        db = null;
-    PreparedStatement stm = null;
-
-    try {
-      db = getConnection(op);
-
-      if (op.returnGeneratedKeys) {
-        stm = db.prepareStatement(op.sql, Statement.RETURN_GENERATED_KEYS);
-      } else {
-        stm = db.prepareStatement(op.sql);
-      }
-      
-      if (op.params != null) {
-        for (int i = 0; i < op.params.length; i++) {
-          stm.setObject(i + 1, op.params[i]);
-        }
-      }
-
-      int r = stm.executeUpdate();
-      if (op.returnGeneratedKeys) {
-        ResultSet rs = stm.getGeneratedKeys();
-        if (rs.next()) {
-          op.generatedKeys = op.generatedKeys(rs);
-        }
-      }
-
-      if (op.returnGeneratedKeys) {
-        logger.debug("Db.update.return,{},{}", r, op.generatedKeys);
-      } else {
-        logger.debug("Db.update.return,{}", r);
-      }
-      return r;
-
-    } catch (SQLException e) {
-      logger.info("Db.update.fail,{},{}", op.sql, op.params);
-      throw new SqlException(e);
-
-    } finally {
-      close(stm);
-      close(db, op);
-    }
+    return ((Integer) op(op)).intValue();
   }
   
+  @SuppressWarnings("unchecked")
   public  <O> List<O> query(Query<O> op) throws SqlException {
-
-    logger.debug("Db.query.sql,{},{}", op.sql, op.params);
-    Connection        db = null;
-    PreparedStatement stm = null;
-
-    try {
-      db = getConnection(op);
-      stm = db.prepareStatement(op.sql);
-      
-      if (op.params != null) {
-        for (int i = 0; i < op.params.length; i++) {
-          stm.setObject(i + 1, op.params[i]);
-        }
-      }
-      
-      ResultSet rs = stm.executeQuery();
-
-      List<O> r = op.possibleCount > 0
-          ? new ArrayList<O>(op.possibleCount)
-          : new ArrayList<O>();
-      while (rs.next()) {
-        r.add(op.result(rs));
-      }
-
-      logger.debug("Db.query.return,{}", r);
-      return r;
-
-    } catch (SQLException e) {
-      logger.info("Db.query.fail,{},{}", op.sql, op.params);
-      throw new SqlException(e);
-
-    } finally {
-      close(stm);
-      close(db, op);
-    }
+    return (List<O>) op(op);
   }
 
   public  <O> O       querySingle(Query<O> op) throws SqlException {
@@ -1078,54 +1143,17 @@ public class Db {
   }
 
   public  int[]       batch(Batch op) throws SqlException {
-
-    logger.debug("Db.batch");
-    Connection        db = null;
-    Statement         stm = null;
-
-    try {
-      db = getConnection(op);
-      
-      if (op.sql != null) {
-        PreparedStatement stm2 = db.prepareStatement(op.sql);
-        stm = stm2;
-        for (Object[] p : op.params2) {
-          if (p != null) {
-            for (int i = 0; i < p.length; i++) {
-              stm2.setObject(i + 1, p[i]);
-            }
-          }
-          stm2.addBatch();
-        }
-      } else {
-        stm = db.createStatement();
-        for (String sql : op.sqls) {
-          stm.addBatch(sql);
-        }
-      }
-
-      int[] r = stm.executeBatch();
-      
-      //logger.debug("Db.batch.return,{}", r);
-      return r;
-
-    } catch (SQLException e) {
-      throw new SqlException(e);
-
-    } finally {
-      close(stm);
-      close(db, op);
-    }
+    return (int[]) op(op);
   }
   
-  private Connection  getConnection(DbOp op) throws SQLException {
+  private Connection  getConnection(Op op) throws SQLException {
     if (op != null && op.conn != null) {
       return op.conn;
     }
-    return serverUsing.pool.getConnection();
+    return server().pool.getConnection();
   }
   
-  private static void close(Connection conn, DbOp op) {
+  private static void close(Connection conn, Op op) {
     if (op != null && op.conn == conn) {
       return;
     }
