@@ -260,7 +260,9 @@ public class Conf {
     if (keyEnd == null) {
       String v = m.get(keyStart);
       if (v != null) {
-        to.putIfAbsent(keyStart, v);
+        if (to.get(keyStart) == null) {
+          to.put(keyStart, v);
+        }
       }
       return to;
     }
@@ -282,7 +284,9 @@ public class Conf {
         if (e.getKey().compareTo(keyEnd) >= 0) {break;}
       }
 
-      to.putIfAbsent(e.getKey(), e.getValue());
+      if (to.get(e.getKey()) == null) {
+        to.put(e.getKey(), e.getValue());
+      }
     }
     
     return to;
