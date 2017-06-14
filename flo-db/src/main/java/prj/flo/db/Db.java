@@ -18,7 +18,6 @@ import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -134,7 +133,6 @@ public class Db {
     }
     
     public  static final String ReplicaMaster  = "master";
-    @SuppressWarnings("unused")
     public  static final String ReplicaSlave   = "slave";
     public  static final int    ModTypeModify = 1;
     public  static final int    ModTypeDelete = 2;
@@ -215,6 +213,15 @@ public class Db {
         logger.error("Db.Server.resetPool.fail", e);
       }
     }
+
+    public  boolean replicaIsMaster() {
+      return replica == null || replica.equals(ReplicaMaster);
+    }
+
+    @SuppressWarnings("unused")
+    public  boolean replicaIsSlave() {
+      return ReplicaSlave.equals(replica);
+    }
     
     public  String toString() {
       return "{driver:" + driver
@@ -232,6 +239,11 @@ public class Db {
           + "}";
     }
     
+  }
+  
+  private static class ServerGroup {
+    public  List<Server>  servers;
+    public  List<Server>  masters;
   }
   
   private        class ConfWatcher implements Conf.Watcher {
@@ -285,8 +297,9 @@ public class Db {
   private static final Logger logger = LoggerFactory.getLogger(Db.class);
 
   private Server        conf;
-  private List<Server>  servers = Collections.emptyList();
+  private ServerGroup   serverGroup = new ServerGroup();
   private AtomicInteger serverIndex = new AtomicInteger();
+  private AtomicInteger masterIndex = new AtomicInteger();
 
   private Db(String name) {
     String confKeyConf = "db/" + name + "/conf";
@@ -313,7 +326,7 @@ public class Db {
   private synchronized void confUpdate(Server conf) {
     this.conf = conf = v(conf, new Server());
     
-    for (Server s : servers) {
+    for (Server s : serverGroup.servers) {
       s.resetPool(conf);
     }
   }
@@ -321,9 +334,9 @@ public class Db {
   private synchronized void serversUpdate(List<Server> ss) {
     if (ss == null || ss.isEmpty()) {return;}
     
-    //put {ss} to {this.dbServers}
+    //put {ss} to {this.serverGroup.servers}
     //add none-exist ones, update exist ones, remove delete ones
-    List<Server> ss2   = new ArrayList<Server>(this.servers);
+    List<Server> ss2 = new ArrayList<Server>(this.serverGroup.servers);
     for (Server s : ss) {
       for (int i = ss2.size() - 1; i >= 0; i--) {
         if (s.sameUrl(ss2.get(i))) {
@@ -333,25 +346,30 @@ public class Db {
       }
       if (s.modType != Server.ModTypeDelete) {
         ss2.add(s);
-      }
-    }
-    
-    //init connection
-    for (Server s : ss2) {
-      if (s.pool == null) {
         s.resetPool(conf);
       }
     }
-    
+
+    ServerGroup sg2 = new ServerGroup();
+    sg2.servers = ss2;
+    for (Server s : sg2.servers) {
+      if (s.replicaIsMaster()) {
+        sg2.masters.add(s);
+      }
+    }
+
     //change servers
-    this.servers = ss2;
+    this.serverGroup = sg2;
   }
   
-  private Server server() {
-    List<Server> servers1 = servers;
-    if (servers1.isEmpty()  ) {return null;}
-    if (servers1.size() == 1) {return servers1.get(0);}
-    return servers1.get(serverIndex.getAndIncrement() % servers1.size());
+  private Server server(boolean useMaster) {
+    ServerGroup sg = serverGroup;
+    List<Server>  ss    = useMaster ? sg.masters  : sg.servers ;
+    AtomicInteger index = useMaster ? masterIndex : serverIndex;
+    
+    if (ss.isEmpty()  ) {return null;}
+    if (ss.size() == 1) {return ss.get(0);}
+    return ss.get(index.getAndIncrement() % ss.size());
   }
 
 
@@ -1150,7 +1168,7 @@ public class Db {
     if (op != null && op.conn != null) {
       return op.conn;
     }
-    return server().pool.getConnection();
+    return server(op.useMaster).pool.getConnection();
   }
   
   private static void close(Connection conn, Op op) {
