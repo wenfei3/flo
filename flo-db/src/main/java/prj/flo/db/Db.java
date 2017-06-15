@@ -242,8 +242,8 @@ public class Db {
   }
   
   private static class ServerGroup {
-    public  List<Server>  servers;
-    public  List<Server>  masters;
+    public  List<Server>  servers = new ArrayList<Server>();
+    public  List<Server>  masters = new ArrayList<Server>();
   }
   
   private        class ConfWatcher implements Conf.Watcher {
@@ -491,6 +491,15 @@ public class Db {
       
       Ctm ctm = new Ctm(c, t);
       
+      //map fields
+      for (Field f : ctm.c.getFields()) {
+        Fcm fcm = fcm(ctm, f, fcs1);
+        if (fcm == null) {continue;}
+        
+        f.setAccessible(true);
+        fcm.f = f;
+      }
+      
       //map getters/setters
       for (Method m : ctm.c.getMethods()) {
         Fcm fcm = fcm(ctm, m, fcs1);
@@ -502,15 +511,6 @@ public class Db {
         } else if (mname.startsWith("set")) {
           fcm.fsetter = m;
         }
-      }
-      
-      //map fields
-      for (Field f : ctm.c.getFields()) {
-        Fcm fcm = fcm(ctm, f, fcs1);
-        if (fcm == null) {continue;}
-        
-        f.setAccessible(true);
-        fcm.f = f;
       }
       
       return ctm;
@@ -597,7 +597,7 @@ public class Db {
       for (int i = 0; i < fname.length(); i++) {
         char c = fname.charAt(i);
         if (c >= 'A' && c <= 'Z') {
-          if (i > 0) {buf.append("_");} //首字母大写的话，不添加下划线
+          if (i > 0) {buf.append("_");} //no "_" for 1st char
           c -= diff;
         }
         buf.append(c);
@@ -662,268 +662,33 @@ public class Db {
   
   }
 
-  public  static          class Param {
-    public  String   table  = null;
-    public  boolean  ignore = false;
-    public  Object[] where  = null;
-    
-    public  Param table(String table) {
-      this.table = table;
-      return this;
-    }
-    public  Param ignore(boolean ignore) {
-      this.ignore = ignore;
-      return this;
-    }
-    public  Param where(Object... where) {
-      this.where = where;
-      return this;
-    }
-  }
+  public  static abstract class Op<T extends Op<T>> {
 
-  public  static abstract class Op {
-    public  boolean    useMaster = true;
-    public  Connection conn;
+    private Connection conn;
+    private boolean    master = true;
     
     public abstract Object op(Connection conn) throws SQLException;
-  }
-
-  public  static          class Update extends Op {
-    private String    sql;
-    private Object[]  params;
-    private boolean   returnGeneratedKeys = false;
-    private Object    generatedKeys;
-    private Object    ormObj;
-    private List<Fcm> fcmAutoIncres;
-
-    public  String   sql() {
-      return sql;
+    
+    public  Connection conn() {
+      return conn;
     }
     
-    public  Update   sql(String sql) {
-      this.sql = sql;
-      return this;
-    }
-
-    public  Object[] params() {
-      return params;
+    @SuppressWarnings("unchecked")
+    public  T conn(Connection conn) {
+      this.conn = conn;
+      return (T)this;
     }
     
-    public  Update   params(Object... params) {
-      this.params = params;
-      return this;
+    public  boolean master() {
+      return master;
     }
     
-    public  boolean  returnGeneratedKeys() {
-      return returnGeneratedKeys;
-    }
-    
-    public  Update   returnGeneratedKeys(boolean returnGeneratedKeys) {
-      this.returnGeneratedKeys = returnGeneratedKeys;
-      return this;
-    }
-    
-    public  Object   generatedKeys() {
-      return generatedKeys;
-    }
-    
-    
-    private Update   ormObj(Object ormObj) {
-      this.ormObj = ormObj;
-      return this;
-    }
-    
-    private Update   fcmAutoIncres(List<Fcm> fcmAutoIncres) {
-      this.fcmAutoIncres = fcmAutoIncres;
-      return this;
-    }
-    
-    public  Object   op(Connection db) {
-      logger.debug("Db.update.sql,{},{}", sql, params);
-      PreparedStatement stm = null;
-
-      try {
-        if (returnGeneratedKeys) {
-          stm = db.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS);
-        } else {
-          stm = db.prepareStatement(sql);
-        }
-        
-        if (params != null) {
-          for (int i = 0; i < params.length; i++) {
-            stm.setObject(i + 1, params[i]);
-          }
-        }
-
-        int r = stm.executeUpdate();
-        if (returnGeneratedKeys) {
-          ResultSet rs = stm.getGeneratedKeys();
-          if (rs.next()) {
-            generatedKeys = generatedKeys(rs);
-          }
-        }
-
-        if (returnGeneratedKeys) {
-          logger.debug("Db.update.return,{},{}", r, generatedKeys);
-        } else {
-          logger.debug("Db.update.return,{}", r);
-        }
-        return r;
-
-      } catch (SQLException e) {
-        logger.error("Db.update.fail,{},{}", sql, params);
-        throw new SqlException(e);
-
-      } finally {
-        close(stm);
-      }
+    @SuppressWarnings("unchecked")
+    public  T master(boolean master) {
+      this.master = master;
+      return (T) this;
     }
 
-    private Object   generatedKeys(ResultSet rs)
-    throws SQLException {
-      ResultSetMetaData meta = rs.getMetaData();
-      int ccount = meta.getColumnCount();
-      
-      if (ccount <= 0) {
-        return null;
-        
-      } else if (ccount == 1) {
-        Object r = rs.getObject(1);
-        //type: BigInteger => Long
-        if (BigInteger.class.isInstance(r)) {
-          if (((BigInteger)r).bitLength() < 64) {
-            r = ((BigInteger)r).longValue();
-          }
-        }
-        if (ormObj !=null && fcmAutoIncres !=null && !fcmAutoIncres.isEmpty()) {
-          fcmAutoIncres.get(0).fset(ormObj, r);
-        }
-        return r;
-        
-      } else {
-        Map<String, Object> map =
-            new HashMap<String, Object>(ccount + ccount / 2);
-        for (int i = 1; i <= ccount; i++) {
-          map.put(meta.getColumnName(i), rs.getObject(i + 1));
-        }
-        return map;
-      }
-    }
-    
-    
-    public  static Update add(Object o) {
-      return add(o, null);
-    }
-    
-    public  static Update add(Object o, Param p) {
-      if (o == null) {return null;}
-      if (p == null) {p = new Param();}
-      
-      Ctm ctm = ctmGet(o.getClass());
-      StringBuilder sql = new StringBuilder();
-      StringBuilder qms = new StringBuilder();
-      List<Object> params = new ArrayList<Object>();
-      List<Fcm>    autoIncres = new ArrayList<Fcm>();
-      
-      sql.append("insert")
-        .append(p.ignore ? " ignore into " : " into ")
-        .append(p.table != null ? p.table : ctm.t).append("(");
-      boolean first = true;
-      for (Fcm fcm : ctm.fcms) {
-        if (!fcm.fgetable()) {continue;}
-        
-        Object v = fcm.fget(o);
-        if (fcm.autoIncre && v == null) {
-          autoIncres.add(fcm);
-          continue;
-        }
-        params.add(v);
-        
-        sql.append(first ? "" : ",").append(fcm.cname);
-        qms.append(first ? "" : ",").append("?");
-        first = false;
-      }
-      sql.append(") value(").append(qms.toString()).append(")");
-      
-      return new Update()
-          .sql(sql.toString()).params(params.toArray())
-          .returnGeneratedKeys(!autoIncres.isEmpty())
-          .ormObj(o).fcmAutoIncres(autoIncres);
-    }
-    
-    /**
-     * update o  set fields not null  where id=id<br/>
-     * <pre>
-     * eg:
-     * mod(user)
-     * update user by user.id
-     * </pre>
-     */
-    public  static Update mod(Object o) {
-      ArrayList<Object> where = new ArrayList<Object>();
-      
-      Ctm ctm = ctmGet(o.getClass());
-      for (Fcm fcm : ctm.fcms) {
-        if (fcm.fgetable() && fcm.id) {
-          where.add(fcm.fname);
-          where.add(fcm.fget(o));
-        }
-      }
-      if (where.isEmpty()) {
-        throw new DbException("No id field");
-      }
-      
-      return mod(o, new Param().where(where.toArray()));
-    }
-
-    /**
-     * update o  set fields not null  where {@code where}<br/>
-     * <pre>
-     * eg:
-     * mod(user, "id", 15L, "name", "jack")
-     * update user ... where id=15 and name='jack'
-     * </pre>
-     */
-    public  static Update mod(Object o, Param p) {
-      Ctm ctm = ctmGet(o.getClass());
-      StringBuilder sql = new StringBuilder();
-      List<Object>  params = new ArrayList<Object>();
-      
-      //update tablex set xx=?,xy=?
-      sql.append("update ")
-         .append(p != null && p.table != null ? p.table : ctm.t)
-         .append(" set ");
-      boolean first = true;
-      for (Fcm fcm : ctm.fcms) {
-        if (!fcm.fgetable()) {continue;}
-        
-        Object v = fcm.fget(o);
-        if (v == null) {continue;}
-        params.add(v);
-        
-        sql.append(first ? "" : ",").append(fcm.cname).append("=?");
-        first = false;
-      }
-      if (params.isEmpty()) {
-        throw new DbException("No fields to mod");
-      }
-      
-      //where aa=? and ab=?
-      if (p != null && p.where != null && p.where.length > 0) {
-        first = true;
-        for (int i = 0; i < p.where.length; i+=2) {
-          Fcm w = ctm.fcmsByFname.get((String) p.where[i]);
-          if (w == null) {continue;}
-          
-          params.add(p.where[i + 1]);
-          sql.append(first ? " where " : " and ").append(w.cname).append("=?");
-          first = false;
-        }
-      }
-      
-      return new Update().sql(sql.toString()).params(params.toArray());
-      
-    }
   }
 
   /**
@@ -931,16 +696,16 @@ public class Db {
    * How to use:
    *   1 set sql
    *   2 set params if has
-   *   3 set ormClass if need ORM, or Map will be used;
-   *     or rewrite method result to handle ResultSet by your own
+   *   3 set ormClass if need ORM, or Map will be used
    * </pre>
    */
-  public  static          class Query<O>  extends Op {
+  public  static          class Query<O>  extends Op<Query<O>> {
+    
     private String    sql;
     private Object[]  params;
     /** (optional) performance is better */
     private int       possibleCount = 0;
-    /** type must be specified because java's Type Erasure */
+    /** type must be specified because of java's Type Erasure */
     private Class<O>  ormClass;
 
     //for result
@@ -956,6 +721,7 @@ public class Db {
       this.ormClass = ormClass;
     }
 
+    
     public  String   sql() {
       return sql;
     }
@@ -1080,12 +846,146 @@ public class Db {
       
       return true;
     }
+    
   }
-  
-  public  static          class Batch     extends Op {
-    public  String         sql;
-    public  List<Object[]> params2;
-    public  List<String>   sqls;
+
+  public  static          class Update    extends Op<Update> {
+
+    private String    sql;
+    private Object[]  params;
+    private boolean   returnGeneratedKeys = false;
+    private Object    generatedKeys;
+    //for orm
+    private Object    ormObj;
+    private List<Fcm> fcmAutoIncres;
+
+
+    public  String   sql() {
+      return sql;
+    }
+    
+    public  Update   sql(String sql) {
+      this.sql = sql;
+      return this;
+    }
+
+    public  Object[] params() {
+      return params;
+    }
+    
+    public  Update   params(Object... params) {
+      this.params = params;
+      return this;
+    }
+    
+    public  boolean  returnGeneratedKeys() {
+      return returnGeneratedKeys;
+    }
+    
+    public  Update   returnGeneratedKeys(boolean returnGeneratedKeys) {
+      this.returnGeneratedKeys = returnGeneratedKeys;
+      return this;
+    }
+    
+    public  Object   generatedKeys() {
+      return generatedKeys;
+    }
+    
+    
+    private Update   ormObj(Object ormObj) {
+      this.ormObj = ormObj;
+      return this;
+    }
+    
+    private Update   fcmAutoIncres(List<Fcm> fcmAutoIncres) {
+      this.fcmAutoIncres = fcmAutoIncres;
+      return this;
+    }
+    
+    public  Object   op(Connection db) {
+      logger.debug("Db.update.sql,{},{}", sql, params);
+      PreparedStatement stm = null;
+
+      try {
+        if (returnGeneratedKeys) {
+          stm = db.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS);
+        } else {
+          stm = db.prepareStatement(sql);
+        }
+        
+        if (params != null) {
+          for (int i = 0; i < params.length; i++) {
+            stm.setObject(i + 1, params[i]);
+          }
+        }
+
+        int r = stm.executeUpdate();
+        if (returnGeneratedKeys) {
+          ResultSet rs = stm.getGeneratedKeys();
+          if (rs.next()) {
+            generatedKeys = generatedKeys(rs);
+          }
+        }
+
+        if (returnGeneratedKeys) {
+          logger.debug("Db.update.return,{},{}", r, generatedKeys);
+        } else {
+          logger.debug("Db.update.return,{}", r);
+        }
+        return r;
+
+      } catch (SQLException e) {
+        logger.error("Db.update.fail,{},{}", sql, params);
+        throw new SqlException(e);
+
+      } finally {
+        close(stm);
+      }
+    }
+
+    private Object   generatedKeys(ResultSet rs)
+    throws SQLException {
+      
+      ResultSetMetaData meta = rs.getMetaData();
+      int ccount = meta.getColumnCount();
+      
+      if (ccount <= 0) {
+        return null;
+        
+      } else if (ccount == 1) {
+        Object r = generatedKeyFix(rs.getObject(1));
+        if (ormObj !=null && fcmAutoIncres !=null && !fcmAutoIncres.isEmpty()) {
+          fcmAutoIncres.get(0).fset(ormObj, r);
+        }
+        return r;
+        
+      } else {
+        Map<String, Object> map =
+            new HashMap<String, Object>(ccount + ccount / 2 + 1);
+        for (int i = 1; i <= ccount; i++) {
+          map.put(meta.getColumnName(i), generatedKeyFix(rs.getObject(i)));
+        }
+        return map;
+      }
+    }
+    
+    private Object   generatedKeyFix(Object r) {
+      //type: BigInteger => Long
+      if (BigInteger.class.isInstance(r)) {
+        if (((BigInteger)r).bitLength() < 64) {
+          r = ((BigInteger)r).longValue();
+        }
+      }
+      return r;
+    }
+
+  }
+
+  public  static          class Batch     extends Op<Batch> {
+    
+    private String         sql;
+    private List<Object[]> params;
+    private List<String>   sqls;
     
     public  Object op(Connection db) {
       logger.debug("Db.batch");
@@ -1095,7 +995,7 @@ public class Db {
         if (sql != null) {
           PreparedStatement stm2 = db.prepareStatement(sql);
           stm = stm2;
-          for (Object[] p : params2) {
+          for (Object[] p : params) {
             if (p != null) {
               for (int i = 0; i < p.length; i++) {
                 stm2.setObject(i + 1, p[i]);
@@ -1112,7 +1012,7 @@ public class Db {
 
         int[] r = stm.executeBatch();
         
-        //logger.debug("Db.batch.return,{}", r);
+        logger.debug("Db.batch.return,{}", r);
         return r;
 
       } catch (SQLException e) {
@@ -1122,6 +1022,34 @@ public class Db {
         close(stm);
       }
     }
+
+    public  String         sql() {
+      return sql;
+    }
+    
+    public  Batch          sql(String sql) {
+      this.sql = sql;
+      return this;
+    }
+
+    public  List<Object[]> params() {
+      return params;
+    }
+    
+    public  Batch          params(List<Object[]> params) {
+      this.params = params;
+      return this;
+    }
+
+    public  List<String>   sqls() {
+      return sqls;
+    }
+    
+    public  Batch          sqls(List<String> sqls) {
+      this.sqls = sqls;
+      return this;
+    }
+
   }
 
 
@@ -1134,7 +1062,7 @@ public class Db {
     }
   }
 
-  public  Object      op(Op op) throws SqlException {
+  public  Object      op(Op<?> op) throws SqlException {
     Connection        db = null;
     try {
       db = getConnection(op);
@@ -1145,11 +1073,7 @@ public class Db {
       close(db, op);
     }
   }
-  
-  public  int         update(Update op) throws SqlException {
-    return ((Integer) op(op)).intValue();
-  }
-  
+
   @SuppressWarnings("unchecked")
   public  <O> List<O> query(Query<O> op) throws SqlException {
     return (List<O>) op(op);
@@ -1160,18 +1084,22 @@ public class Db {
     return r.isEmpty() ? null : r.get(0);
   }
 
+  public  int         update(Update op) throws SqlException {
+    return ((Integer) op(op)).intValue();
+  }
+
   public  int[]       batch(Batch op) throws SqlException {
     return (int[]) op(op);
   }
-  
-  private Connection  getConnection(Op op) throws SQLException {
+
+  private Connection  getConnection(Op<?> op) throws SQLException {
     if (op != null && op.conn != null) {
       return op.conn;
     }
-    return server(op.useMaster).pool.getConnection();
+    return server(op.master).pool.getConnection();
   }
-  
-  private static void close(Connection conn, Op op) {
+
+  private static void close(Connection conn, Op<?> op) {
     if (op != null && op.conn == conn) {
       return;
     }
@@ -1186,6 +1114,254 @@ public class Db {
     }
   }
 
+  
+  //ORM operate
+
+  public  static      class OpParam {
+    private String   table  = null;
+    private boolean  ignore = false;
+    private Object[] where  = null;
+    private String[] order  = null;
+    private int[]    limit  = null;
+    
+    public  OpParam table(String table) {
+      this.table = table;
+      return this;
+    }
+    public  OpParam ignore(boolean ignore) {
+      this.ignore = ignore;
+      return this;
+    }
+    public  OpParam where(Object... where) {
+      this.where = where;
+      return this;
+    }
+    public  OpParam order(String... order) {
+      this.order = order;
+      return this;
+    }
+    public  OpParam limit(int... limit) {
+      this.limit = limit;
+      return this;
+    }
+  }
+
+  public  <O> O       get(O id) {
+    @SuppressWarnings("unchecked")
+    Class<O> claz = (Class<O>) id.getClass();
+    Ctm ctm = ctmGet(claz);
+    
+    StringBuilder sql    = new StringBuilder();
+    List<Object>  params = new ArrayList<Object>(2);
+    boolean       first  = true;
+    sql.append("select * from ").append(ctm.t);
+    for (Fcm fcm : ctm.fcms) {
+      if (!fcm.id || !fcm.fgetable()) {continue;}
+      sql.append(first ? " where " : " and ").append(fcm.cname).append("=?");
+      params.add(fcm.fget(id));
+      first = false;
+    }
+    if (params.isEmpty()) {throw new DbException("no id");}
+    
+    return querySingle(new Query<O>(claz)
+        .sql(sql.toString())
+        .params(params.toArray()));
+  }
+
+  public  <O> List<O> list(Class<O> claz) {
+    return list(claz, null);
+  }
+
+  public  <O> List<O> list(Class<O> claz, OpParam p) {
+    Ctm ctm = ctmGet(claz);
+    
+    StringBuilder sql    = new StringBuilder();
+    List<Object>  params = new ArrayList<Object>(2);
+    
+    sql.append("select * from");
+    table(p, sql, ctm);
+    where(p, sql, params, ctm);
+    order(p, sql, ctm);
+    limit(p, sql, params);
+    
+    return query(new Query<O>(claz)
+        .sql(sql.toString())
+        .params(params.toArray()));
+  }
+  
+  public  int         add(Object o) {
+    return add(o, null);
+  }
+  
+  public  int         add(Object o, OpParam p) {
+    if (o == null) {return 0;}
+    
+    Ctm ctm = ctmGet(o.getClass());
+    StringBuilder sql = new StringBuilder();
+    StringBuilder qms = new StringBuilder();
+    List<Object>  params = new ArrayList<Object>();
+    List<Fcm>     autoIncres = new ArrayList<Fcm>();
+    
+    sql.append("insert")
+      .append(p != null && p.ignore ? " ignore into " : " into ")
+      .append(p != null && p.table != null ? p.table : ctm.t)
+      .append("(");
+    boolean first = true;
+    for (Fcm fcm : ctm.fcms) {
+      if (!fcm.fgetable()) {continue;}
+      
+      Object v = fcm.fget(o);
+      if (fcm.autoIncre && v == null) {
+        autoIncres.add(fcm);
+        continue;
+      }
+      params.add(v);
+      
+      sql.append(first ? "" : ",").append(fcm.cname);
+      qms.append(first ? "" : ",").append("?");
+      first = false;
+    }
+    sql.append(") value(").append(qms.toString()).append(")");
+    
+    return update(new Update()
+        .sql(sql.toString())
+        .params(params.toArray())
+        .returnGeneratedKeys(!autoIncres.isEmpty())
+        .fcmAutoIncres(autoIncres)
+        .ormObj(o)
+        );
+  }
+  
+  /** modify object's not-null fields by id */
+  public  int         mod(Object o) {
+    Object[] whereIds = whereIds(o);
+    if (whereIds.length == 0) {throw new DbException("No id");}
+    return mod(o, new OpParam().where(whereIds));
+  }
+
+  /**
+   * modify object's not-null fields by where<br/>
+   * <pre>
+   * eg:
+   * mod(user, "id", 15L, "version", 12)
+   * //update user ... where id=15 and version=12
+   * </pre>
+   */
+  public  int         mod(Object o, OpParam p) {
+    Ctm ctm = ctmGet(o.getClass());
+    StringBuilder sql = new StringBuilder();
+    List<Object>  params = new ArrayList<Object>();
+    
+    //update tablex
+    sql.append("update");
+    table(p, sql, ctm);
+    
+    //set xx=?,xy=?
+    boolean first = true;
+    for (Fcm fcm : ctm.fcms) {
+      if (!fcm.fgetable()) {continue;}
+      
+      Object v = fcm.fget(o);
+      if (v == null) {continue;}
+      
+      sql.append(first ? " set " : ",").append(fcm.cname).append("=?");
+      params.add(v);
+      first = false;
+    }
+    if (params.isEmpty()) {
+      throw new DbException("No fields to mod");
+    }
+    
+    where(p, sql, params, ctm);
+    
+    return update(new Update()
+        .sql(sql.toString())
+        .params(params.toArray()));
+  }
+
+  /** delete object by id */
+  public  int         del(Object o) {
+    Object[] whereIds = whereIds(o);
+    if (whereIds.length == 0) {throw new DbException("No id");}
+    return del(o, new OpParam().where(whereIds));
+  }
+  
+  /** delete object by where */
+  public  int         del(Object o, OpParam p) {
+    Ctm ctm = ctmGet(o.getClass());
+    StringBuilder sql = new StringBuilder();
+    List<Object>  params = new ArrayList<Object>();
+    
+    sql.append("delete from");
+    table(p, sql, ctm);
+    where(p, sql, params, ctm);
+    limit(p, sql, params);
+    
+    return update(new Update()
+        .sql(sql.toString())
+        .params(params.toArray()));
+  
+  }
+
+  private Object[]    whereIds(Object o) {
+    Ctm ctm = ctmGet(o.getClass());
+    ArrayList<Object> where = new ArrayList<Object>();
+    
+    for (Fcm fcm : ctm.fcms) {
+      if (fcm.id && fcm.fgetable()) {
+        where.add(fcm.fname);
+        where.add(fcm.fget(o));
+      }
+    }
+    
+    return where.toArray();
+  }
+  
+  private void        table(OpParam p, StringBuilder sql, Ctm ctm) {
+    sql.append(" ").append(p != null && p.table != null ? p.table : ctm.t);
+  }
+  
+  private void        where(
+      OpParam p, StringBuilder sql, List<Object> params, Ctm ctm) {
+    //where aa=? and ab=?
+    if (p != null && p.where != null && p.where.length > 0) {
+      boolean first = true;
+      for (int i = 0; i < p.where.length; i+=2) {
+        String fname = p.where[i].toString();
+        Fcm w = ctm.fcmsByFname.get(fname);
+        if (w == null) {throw new DbException("no field " + fname);}
+        
+        sql.append(first ? " where " : " and ").append(w.cname).append("=?");
+        params.add(p.where[i + 1]);
+        first = false;
+      }
+    }
+  }
+  
+  private void        order(OpParam p, StringBuilder sql, Ctm ctm) {
+    if (p != null && p.order != null && p.order.length > 0) {
+      boolean first = true;
+      for (int i = 0; i < p.order.length; i++) {
+        String fname = p.order[i].toString();
+        Fcm fcm = ctm.fcmsByFname.get(fname);
+        if (fcm == null) {throw new DbException("no field " + fname);}
+        
+        sql.append(first ? " order by " : ",").append(fcm.cname);
+      }
+    }
+  }
+  
+  private void        limit(OpParam p, StringBuilder sql, List<Object> params) {
+    //limit ?,?
+    if (p != null && p.limit != null && p.limit.length > 0) {
+      sql.append(" limit ").append(p.limit.length == 1 ? "?" : "?,?");
+      params.add(p.limit[0]);
+      if (p.limit.length > 1) {
+        params.add(p.limit[1]);
+      }
+    }
+  }
+  
 
 
 
