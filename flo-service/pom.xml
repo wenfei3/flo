@@ -4,7 +4,7 @@
 
   <groupId>prj.flo</groupId>
   <artifactId>flo-service</artifactId>
-  <version>0.1.0-SNAPSHOT</version>
+  <version>0.1.1-SNAPSHOT</version>
   <packaging>jar</packaging>
   
   <properties>
@@ -17,7 +17,7 @@
     <dependency>
       <groupId>prj.flo</groupId>
       <artifactId>flo-conf</artifactId>
-      <version>0.1.0-SNAPSHOT</version>
+      <version>0.1.1-SNAPSHOT</version>
     </dependency>
   </dependencies>
 
