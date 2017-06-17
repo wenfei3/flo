@@ -11,5 +11,6 @@ provide function of configuration (conf).
       (file format: properties)
 
 * 2 conf keys used by flo
+  - flo_* : key starts with flo_ is reserved
   - enviroment : flo_env
   - conf file  : flo_conf_file
