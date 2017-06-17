@@ -93,6 +93,8 @@ public class Db {
   //one Db instance for one pool of db servers.
   //each db server has a pool of connections.
   
+  private static final String ConfKeyPrefix = "flo_db_conf_key_prefix";
+  
   private static class Server {
 
     public  static Server valueOf(String str) {
@@ -302,10 +304,11 @@ public class Db {
   private AtomicInteger masterIndex = new AtomicInteger();
 
   private Db(String name) {
-    String confKeyConf = "db/" + name + "/conf";
-    String confKeyServersPrefix = "db/" + name + "/servers/";
+    String confKeyPrefix = Conf.get(ConfKeyPrefix, "");
+    String confKeyConf = confKeyPrefix + "db/" + name + "/conf";
+    String confKeyServersPrefix = confKeyPrefix + "db/" + name + "/servers/";
     String confKeyServersStart  = Conf.keyStart(confKeyServersPrefix);
-    String confKeyServersEnd    = Conf.keyEnd(confKeyServersPrefix);
+    String confKeyServersEnd    = Conf.keyEnd  (confKeyServersPrefix);
     
     Conf.watch(confKeyConf, null, new ConfWatcher());
     confUpdate(Server.valueOf(Conf.get(confKeyConf)));
