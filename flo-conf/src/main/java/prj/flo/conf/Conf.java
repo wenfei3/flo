@@ -114,6 +114,11 @@ public class Conf {
     
   }
 
+  public  static void     set(
+      String key, String value, boolean expireWhenDisconnect) {
+    //TODO set
+  }
+  
 
 
 
