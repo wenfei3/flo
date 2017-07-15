@@ -122,6 +122,11 @@ public class Conf {
 
 
 
+  static interface Confer {
+    String   get(String key, String keyEnd);
+    String   set(String key, String value, Long expire);
+  }
+
   private static String   single(
     String key,
     boolean getInSystemProperty, boolean getInSystemEnv,

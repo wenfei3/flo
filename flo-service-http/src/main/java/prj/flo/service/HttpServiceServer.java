@@ -535,6 +535,8 @@ public  class HttpServiceServer implements ServiceServer {
   
 
   
+  //part 3: utility
+  
   private static class PropertyReader {
     
     private Properties p;
