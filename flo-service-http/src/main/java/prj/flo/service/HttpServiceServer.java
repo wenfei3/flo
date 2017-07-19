@@ -15,6 +15,7 @@ import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Future;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.slf4j.Logger;
@@ -181,8 +182,18 @@ public  class HttpServiceServer implements ServiceServer {
         final int contentLengthMax2 = contentLengthMax > 0
             ? contentLengthMax : 1 * 1024 * 1024;
         
-        bossGroup = new NioEventLoopGroup(8);
-        workerGroup = new NioEventLoopGroup(16);
+        bossGroup = new NioEventLoopGroup(8, new ThreadFactory() {
+          private AtomicInteger id = new AtomicInteger();
+          public Thread newThread(Runnable r) {
+            return new Thread(r, "nio-" + id.incrementAndGet());
+          }
+        });
+        workerGroup = new NioEventLoopGroup(16, new ThreadFactory() {
+          private AtomicInteger id = new AtomicInteger();
+          public Thread newThread(Runnable r) {
+            return new Thread(r, "worker-" + id.incrementAndGet());
+          }
+        });
         final ChannelInboundHandlerAdapter handler = this;
         
         ServerBootstrap b = new ServerBootstrap();
@@ -217,6 +228,10 @@ public  class HttpServiceServer implements ServiceServer {
         bossGroup  = null;
         workerGroup = null;
       }
+    }
+    
+    public boolean isSharable() {
+      return true;
     }
     
     public  void channelRead(ChannelHandlerContext ctx, Object msg)
