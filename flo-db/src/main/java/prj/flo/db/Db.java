@@ -10,6 +10,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Member;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -417,11 +418,14 @@ public class Db {
   
   /** Field Column Mapping */
   private static class Fcm {
-    private String fname;
-    private String cname;
-    private Field  f;
-    private Method fgetter;
-    private Method fsetter;
+    private String  fname;
+    private String  cname;
+    private Field   f;
+    @SuppressWarnings("rawtypes")
+    private Class   fclass;
+    private boolean fclassNumber;
+    private Method  fgetter;
+    private Method  fsetter;
     private boolean autoIncre;
     private boolean id;
     
@@ -430,11 +434,17 @@ public class Db {
       this.cname = cname;
     }
     
+    @SuppressWarnings("rawtypes")
+    private void    fclass(Class fclass) {
+      this.fclass = fclass;
+      this.fclassNumber = Number.class.isAssignableFrom(fclass);
+    }
+    
     public  boolean fgetable() {
       return fgetter != null || f != null;
     }
     
-    public  Object fget(Object o) throws DbException {
+    public  Object  fget(Object o) throws DbException {
       try {
         if (fgetter != null) {
           return fgetter.invoke(o);
@@ -453,8 +463,9 @@ public class Db {
       return fsetter != null || f != null;
     }
     
-    public  void   fset(Object o, Object v) throws DbException {
+    public  void    fset(Object o, Object v) throws DbException {
       try {
+        v = numFix(v);
         if (fsetter != null) {
           fsetter.invoke(o, v);
         } else if (f != null) {
@@ -463,6 +474,31 @@ public class Db {
       } catch (Exception e) {
         throw new DbException("fcm.fset fail," + fname , e);
       }
+    }
+    
+    @SuppressWarnings("rawtypes")
+    private Object numFix(Object v) {
+      if (v == null) {return null;}
+      if (!fclassNumber) {return v;}
+      
+      Class vclass = v.getClass();
+      if (vclass == fclass) {return v;}
+
+      if (Number.class.isAssignableFrom(vclass)) {
+        Number vn = Number.class.cast(v);
+        if (fclass == Byte   .class) {return vn.byteValue ();}
+        if (fclass == Short  .class) {return vn.shortValue();}
+        if (fclass == Integer.class) {return vn.intValue();}
+        if (fclass == Long   .class) {return vn.longValue();}
+        if (fclass == BigInteger.class) {
+          return BigInteger.valueOf(vn.longValue());
+        }
+        if (fclass == BigDecimal.class) {
+          return BigDecimal.valueOf(vn.doubleValue());
+        }
+      }
+      
+      return v;
     }
   }
   
@@ -501,6 +537,7 @@ public class Db {
         
         f.setAccessible(true);
         fcm.f = f;
+        fcm.fclass(f.getType());
       }
       
       //map getters/setters
@@ -511,8 +548,10 @@ public class Db {
         String mname = m.getName();
         if (mname.startsWith("get")) {
           fcm.fgetter = m;
+          if (fcm.fclass == null) {fcm.fclass(m.getReturnType());}
         } else if (mname.startsWith("set")) {
           fcm.fsetter = m;
+          if (fcm.fclass == null) {fcm.fclass(m.getParameterTypes()[0]);}
         }
       }
       
