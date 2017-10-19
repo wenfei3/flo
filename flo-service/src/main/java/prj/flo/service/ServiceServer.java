@@ -7,12 +7,10 @@ package prj.flo.service;
  */
 interface ServiceServer {
   
-  <I> void start(I service);
-  
   <I> void start(I service, Class<I> itface);
   
-  <I> void stop (I service);
+  <I> void start(I service);
   
-  <I> void stop (I service, Class<I> itface);
+  void stop (String name);
   
 }

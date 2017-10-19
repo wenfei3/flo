@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -68,11 +69,10 @@ public  class HttpServiceServer implements ServiceServer {
   
   
   
-  //part 1: service container.
-  //contain services, manage port, dispatch req
+  //part 1: service server container.
+  //contain service server, manage port, dispatch req
   
-  //part 1.1: contain services
-  //TODO refine for async operates
+  //part 1.1: contain service server
   
   private static HttpServiceServer Container = new HttpServiceServer();
   
@@ -91,40 +91,35 @@ public  class HttpServiceServer implements ServiceServer {
     }, "HttpServiceServer.stopAll"));
   }
   
-  public  <I> void start(I service) {
-    start(service, itface(service));
-  }
   
   public  <I> void start(I service, Class<I> itface) {
     if (service == null) {throw new NullPointerException("service is null");}
     if (itface  == null) {throw new NullPointerException("itface is null");}
     
-    HttpServiceServer server = server(service, itface);
-    if (server == null) {
-      server = new HttpServiceServer(this, service, itface);
-      servers.add(server);
-    }
-    
+    HttpServiceServer server = serverOrNew(service, itface);
     server.start();
   }
   
-  public  <I> void stop (I service) {
-    stop(service, itface(service));
+  public  <I> void start(I service) {
+    start(service, itface(service));
   }
   
-  public  <I> void stop (I service, Class<I> itface) {
-    if (service == null) {throw new NullPointerException("service is null");}
-    if (itface  == null) {throw new NullPointerException("itface is null");}
+  public      void stop (String name) {
+    if (name == null) {
+      logger.info("no service null");
+      return;
+    }
 
-    HttpServiceServer server = server(service, itface);
+    HttpServiceServer server = serverByName(name);
     if (server == null) {
-      logger.info("server is null for service {}", service);
+      logger.info("no service {}", name);
+      return;
     }
     
     server.stop();
   }
   
-  private     void stopAll() {
+  private     void          stopAll() {
     for (HttpServiceServer s : servers) {
       s.stop();
     }
@@ -137,23 +132,48 @@ public  class HttpServiceServer implements ServiceServer {
     Class<?>[] itfaces = service.getClass().getInterfaces();
     if (itfaces.length != 1) {
       throw new ServiceException(
-          "service has too many interfaces to determine one");
+          "service must has one interface if not specify one");
     }
     
     return (Class<I>) itfaces[0];
   }
   
-  private HttpServiceServer server(Object s, Class<?> i) {
-    List<HttpServiceServer> servers1 = servers;
-    for (HttpServiceServer hss : servers1) {
-      if (hss.s == s && hss.i == i) {
+  private HttpServiceServer serverByName(String name) {
+    for (int n = servers.size() - 1; n >= 0; n--) {
+      HttpServiceServer hss = servers.get(n);
+      if (hss.name.equals(name)) {
         return hss;
       }
     }
     return null;
   }
   
+  private HttpServiceServer serverOrNew(Object s, Class<?> i) {
+    HttpServiceServer server = serverByItface(i);
+    if (server != null) {return server;}
+    
+    synchronized(servers) {
+      server = serverByItface(i);
+      if (server != null) {return server;}
 
+      server = new HttpServiceServer(this, s, i);
+      servers.add(server);
+    }
+    
+    return server;
+  }
+  
+  private HttpServiceServer serverByItface(Class<?> i) {
+    for (int n = servers.size() - 1; n >= 0; n--) {
+      HttpServiceServer hss = servers.get(n);
+      if (hss.i == i) {
+        return hss;
+      }
+    }
+    return null;
+  }
+  
+  
   
   
   //part 1.2: manage port, dispatch req
@@ -182,16 +202,16 @@ public  class HttpServiceServer implements ServiceServer {
         final int contentLengthMax2 = contentLengthMax > 0
             ? contentLengthMax : 1 * 1024 * 1024;
         
-        bossGroup = new NioEventLoopGroup(8, new ThreadFactory() {
+        bossGroup   = new NioEventLoopGroup( 8, new ThreadFactory() {
           private AtomicInteger id = new AtomicInteger();
           public Thread newThread(Runnable r) {
-            return new Thread(r, "nio-" + id.incrementAndGet());
+            return new Thread(r, "hss_nio_" + id.incrementAndGet());
           }
         });
         workerGroup = new NioEventLoopGroup(16, new ThreadFactory() {
           private AtomicInteger id = new AtomicInteger();
           public Thread newThread(Runnable r) {
-            return new Thread(r, "worker-" + id.incrementAndGet());
+            return new Thread(r, "hss_worker_" + id.incrementAndGet());
           }
         });
         final ChannelInboundHandlerAdapter handler = this;
@@ -230,7 +250,7 @@ public  class HttpServiceServer implements ServiceServer {
       }
     }
     
-    public boolean isSharable() {
+    public  boolean isSharable() {
       return true;
     }
     
@@ -333,7 +353,7 @@ public  class HttpServiceServer implements ServiceServer {
         }
         
       } catch (Exception e) {
-        logger.info("Dispatcher.decodeParam.fail", e);
+        logger.warn("Dispatcher.decodeParam.fail", e);
       }
     }
     
@@ -356,7 +376,6 @@ public  class HttpServiceServer implements ServiceServer {
       }
     }
     
-    @SuppressWarnings("rawtypes")
     private void dispatch(HttpReq req) {
       boolean dispatched = false;
       Object  r = null;
@@ -369,22 +388,18 @@ public  class HttpServiceServer implements ServiceServer {
             break;
           }
         }
-        if (Future.class.isInstance(r)) {
-          r = ((Future)r).get();
-        }
         
       } catch (Exception e) {
         logger.error("Dispatcher.dispatch.fail", e);
         req.resp().status(502).flush();
         return;
       }
-
-      
       if (!dispatched) {
         req.resp().status(404).flush();
         return;
-        
-      } else if (byte[].class.isInstance(r)) {
+      }
+      
+      if (byte[].class.isInstance(r)) {
         req.resp().content((byte[])r).flush();
         return;
       }
@@ -407,9 +422,15 @@ public  class HttpServiceServer implements ServiceServer {
     Dispatcher d = dispatchers.get(port);
     if (d != null) {return d;}
     
-    d = new Dispatcher(this);
-    d.start(port, contentLengthMax);
-    dispatchers.put(port, d);
+    synchronized(dispatchers) {
+      d = dispatchers.get(port);
+      if (d != null) {return d;}
+      
+      d = new Dispatcher(this);
+      d.start(port, contentLengthMax);
+      dispatchers.put(port, d);
+    }
+    
     return d;
   }
   
@@ -428,7 +449,7 @@ public  class HttpServiceServer implements ServiceServer {
 
   
   
-  //part 2: service server (serve one service)
+  //part 2: service server (that serves one service)
   //func:
   //  1 reg service to conf
   //  2 watch conf for service control
@@ -442,25 +463,26 @@ public  class HttpServiceServer implements ServiceServer {
   private HttpServiceServer container;
   private Object            s; //service
   private Class<?>          i; //interface
+  private String            name;
   private HttpConf          conf;
-  private TreeMap<String, DispatchMethod> dms;
+  private TreeMap<String, DispatchMethod> dms; //dispatchMethods
   
   private HttpServiceServer(HttpServiceServer container, Object s, Class<?> i) {
     this.container = container;
     this.s = s;
     this.i = i;
     
-    status = new AtomicInteger();
+    status = new AtomicInteger(StatusStoped);
+    name   = i.getCanonicalName();
 
     
     //conf
     conf = new HttpConf();
-    String iName = i.getCanonicalName();
     String confKeyPrefix = Conf.get(HttpServiceServer.ConfKeyPrefix, "");
     PropertyReader pr = new PropertyReader(Conf.get(
-        confKeyPrefix + "service/" + iName + "/conf/base", ""));
+        confKeyPrefix + "service/" + name + "/conf/base", ""));
     
-    conf.logReq    = v(i2b(pr.getInt("http_log_req")), conf.logReq);;
+    conf.logReq    = v(i2b(pr.getInt("http_log_req")), conf.logReq);
     conf.port      = pr.getInt("http_port", 0);
     if (conf.port == 0) {conf.port = portUsable();}
     conf.contentLengthMax = v(
@@ -486,11 +508,11 @@ public  class HttpServiceServer implements ServiceServer {
     }
     
     try {
-      logger.info("starting service " + i.getCanonicalName());
+      logger.info("starting service " + name);
       container.dispatcher(conf.port, conf.contentLengthMax).add(this);
       
       status.set(StatusStarted);
-      logger.info("started service " + i.getCanonicalName());
+      logger.info("started service " + name);
       
     } catch (Exception e) {
       status.set(StatusStoped);
@@ -504,7 +526,7 @@ public  class HttpServiceServer implements ServiceServer {
     }
     
     try {
-      logger.info("stoping service " + i.getCanonicalName());
+      logger.info("stoping service " + name);
       container.dispatcher(conf.port, conf.contentLengthMax).rm(this);
       
     } catch (Exception e) {
@@ -512,7 +534,7 @@ public  class HttpServiceServer implements ServiceServer {
       
     } finally {
       status.set(StatusStoped);
-      logger.info("stoped service " + i.getCanonicalName());
+      logger.info("stoped service " + name);
     }
   }
   
@@ -521,6 +543,7 @@ public  class HttpServiceServer implements ServiceServer {
     return dms.containsKey(req.uri());
   }
   
+  @SuppressWarnings("rawtypes")
   private Object  dispatch(HttpReq req) throws Exception {
     if (conf.logReq) {
       logger.info("httpReq: {}, {}", req.uri, req.params);
@@ -532,7 +555,12 @@ public  class HttpServiceServer implements ServiceServer {
       params.add(json(req.params.get(p.getName()), p.getType()));
     }
 
-    return dm.m.invoke(s, params.toArray());
+    Object r = dm.m.invoke(s, params.toArray());
+    if (Future.class.isInstance(r)) {
+      r = ((Future)r).get();
+    }
+    
+    return r;
   }
   
   
@@ -590,6 +618,7 @@ public  class HttpServiceServer implements ServiceServer {
     return i != 0;
   }
   
+  @SuppressWarnings("unchecked")
   private static <T> T   v(T... vs) {
     for (T v : vs) {
       if (v != null) {return v;}
@@ -597,7 +626,7 @@ public  class HttpServiceServer implements ServiceServer {
     return null;
   }
   
-  private int portUsable() {
+  private static int     portUsable() {
     try {
         ServerSocket serverSocket = new ServerSocket(0);
         int port = serverSocket.getLocalPort();
@@ -608,17 +637,14 @@ public  class HttpServiceServer implements ServiceServer {
     }
   }
   
-  private static String json(Object obj) {
-    try {
-      return new ObjectMapper().writeValueAsString(obj);
-    } catch (Exception e) {
-      logger.warn("json.fail", e);
-      return null;
-    }
+  private static final ObjectMapper Om = new ObjectMapper();
+  static {
+    Om.setSerializationInclusion(JsonInclude.Include.NON_NULL);
+    Om.disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
   }
   
   @SuppressWarnings("unchecked")
-  private static <T> T json(String json, Class<T> claz) {
+  private static <T> T  json(String json, Class<T> claz) {
     if (json == null) {return null;}
     if (json.isEmpty()) {
       if (String.class.equals(claz)) {return (T) json;}
@@ -626,11 +652,18 @@ public  class HttpServiceServer implements ServiceServer {
     }
     
     try {
-      ObjectMapper om = new ObjectMapper();
-      om.disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
-      return om.readValue(json, claz);
+      return Om.readValue(json, claz);
     } catch (Exception e) {
-      logger.warn("json fail", e);
+      logger.warn("json.fail", e);
+      return null;
+    }
+  }
+  
+  private static String json(Object obj) {
+    try {
+      return Om.writeValueAsString(obj);
+    } catch (Exception e) {
+      logger.warn("json.fail", e);
       return null;
     }
   }
