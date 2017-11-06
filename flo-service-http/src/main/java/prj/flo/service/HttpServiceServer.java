@@ -646,10 +646,8 @@ public  class HttpServiceServer implements ServiceServer {
   @SuppressWarnings("unchecked")
   private static <T> T  json(String json, Class<T> claz) {
     if (json == null) {return null;}
-    if (json.isEmpty()) {
-      if (String.class.equals(claz)) {return (T) json;}
-      return null;
-    }
+    if (String.class.equals(claz)) {return (T) json;}
+    if (json.isEmpty()) {return null;}
     
     try {
       return Om.readValue(json, claz);
